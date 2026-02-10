@@ -76,6 +76,7 @@ function el(tag, attrs = {}, children = []) {
     }
     else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'disabled') node.disabled = Boolean(v);
+    else if (k === 'checked') node.checked = true;
     else node.setAttribute(k, String(v));
   }
   for (const c of children) node.appendChild(c);
@@ -114,20 +115,22 @@ function renderIntro({ banks, selectedSectionIds, onToggleSection, onSelectAll, 
 
       el('p', { class: 'sub', text: 'Избери кои раздели да се включат в теста:' }),
 
-      el('div', { class: 'choices' }, banks.sections.map(sec => {
+      el('div', { class: 'choices sections' }, banks.sections.map(sec => {
         const checked = selectedSectionIds.includes(sec.id);
-        const btn = el('button', {
-          class: 'choice',
-          onClick: () => onToggleSection(sec.id),
-        }, [
-          el('span', { class: 'label', text: checked ? '☑' : '☐' }),
-          el('span', { text: `${sec.label} (${sec.count})` })
+
+        const cb = el('input', {
+          type: 'checkbox',
+          class: 'section-checkbox',
+          ...(checked ? { checked: 'checked' } : {}),
+          onChange: () => onToggleSection(sec.id),
+        });
+
+        const label = el('label', { class: 'section-row' }, [
+          cb,
+          el('span', { text: `${sec.label} (${sec.count})` }),
         ]);
-        if (checked) {
-          btn.style.borderColor = 'rgba(122,162,255,.65)';
-          btn.style.background = 'rgba(122,162,255,.10)';
-        }
-        return btn;
+
+        return label;
       })),
 
       el('p', { class: 'q', text: 'Ще получиш 30 случайни въпроса от избраните раздели. След всеки отговор ще видиш дали е верен + кратко обяснение.' }),
