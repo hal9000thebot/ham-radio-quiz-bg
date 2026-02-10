@@ -21,8 +21,12 @@ function el(tag, attrs = {}, children = []) {
   for (const [k, v] of Object.entries(attrs)) {
     if (k === 'class') node.className = v;
     else if (k === 'text') node.textContent = v;
+    else if (v === null || v === undefined || v === false) {
+      // skip null-ish attributes
+    }
     else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
-    else node.setAttribute(k, v);
+    else if (k === 'disabled') node.disabled = Boolean(v);
+    else node.setAttribute(k, String(v));
   }
   for (const c of children) node.appendChild(c);
   return node;
@@ -87,9 +91,11 @@ function renderQuestion(state) {
 
     const btn = el('button', {
       class: 'choice',
-      disabled: answered ? 'true' : null,
+      disabled: Boolean(answered),
       onClick: () => {
         if (answered) return;
+        const ok = window.confirm(`Сигурен ли си, че избираш отговор ${letter}?`);
+        if (!ok) return;
         state.answerCurrent(letter);
       }
     }, [
