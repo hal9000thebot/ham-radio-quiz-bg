@@ -97,17 +97,48 @@ function renderError(err) {
   );
 }
 
-function renderIntro({ totalQuestions, onStart }) {
+function renderIntro({ banks, selectedSectionIds, onToggleSection, onSelectAll, onStart }) {
+  const totalSelected = banks.sections
+    .filter(s => selectedSectionIds.includes(s.id))
+    .reduce((sum, s) => sum + (s.count || 0), 0);
+
   ROOT.innerHTML = '';
   ROOT.appendChild(
     el('div', { class: 'card' }, [
       el('div', { class: 'row' }, [
-        el('span', { class: 'pill', text: `База: ${totalQuestions} въпроса` }),
+        el('span', { class: 'pill', text: `Избрани въпроси: ${totalSelected}` }),
         el('span', { class: 'pill', text: `Сесия: ${SESSION_SIZE} въпроса` }),
+        el('span', { class: 'spacer' }),
+        el('button', { class: 'secondary', text: 'Избери всички', onClick: onSelectAll }),
       ]),
-      el('p', { class: 'q', text: 'Готов ли си? Ще получиш 30 случайни въпроса. След всеки отговор ще видиш дали е верен + кратко обяснение.' }),
+
+      el('p', { class: 'sub', text: 'Избери кои раздели да се включат в теста:' }),
+
+      el('div', { class: 'choices' }, banks.sections.map(sec => {
+        const checked = selectedSectionIds.includes(sec.id);
+        const btn = el('button', {
+          class: 'choice',
+          onClick: () => onToggleSection(sec.id),
+        }, [
+          el('span', { class: 'label', text: checked ? '☑' : '☐' }),
+          el('span', { text: `${sec.label} (${sec.count})` })
+        ]);
+        if (checked) {
+          btn.style.borderColor = 'rgba(122,162,255,.65)';
+          btn.style.background = 'rgba(122,162,255,.10)';
+        }
+        return btn;
+      })),
+
+      el('p', { class: 'q', text: 'Ще получиш 30 случайни въпроса от избраните раздели. След всеки отговор ще видиш дали е верен + кратко обяснение.' }),
+
       el('div', { class: 'actions' }, [
-        el('button', { class: 'primary', text: 'Старт', onClick: onStart }),
+        el('button', {
+          class: 'primary',
+          text: 'Старт',
+          onClick: onStart,
+          disabled: selectedSectionIds.length === 0,
+        }),
       ])
     ])
   );
@@ -272,17 +303,44 @@ function renderResults(state) {
   );
 }
 
-async function loadQuestions() {
-  const res = await fetch('./data/questions.json');
+const SECTION_SELECTION_KEY = 'hamQuizSelectedSectionsV1';
+
+async function loadBanks() {
+  const res = await fetch('./data/banks.json');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function loadSelectedSections(defaultIds) {
+  try {
+    const raw = localStorage.getItem(SECTION_SELECTION_KEY);
+    if (!raw) return defaultIds;
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr) && arr.length) return arr;
+    return defaultIds;
+  } catch {
+    return defaultIds;
+  }
+}
+
+function saveSelectedSections(ids) {
+  try {
+    localStorage.setItem(SECTION_SELECTION_KEY, JSON.stringify(ids));
+  } catch {}
+}
+
+async function loadSectionQuestions(file) {
+  const res = await fetch(`./data/${file}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
-  // Safety: only keep questions with 4 choices
   return data.filter(q => q && q.question && q.choices && q.choices['А'] && q.choices['Б'] && q.choices['В'] && q.choices['Г']);
 }
 
-function createState(allQuestions) {
+function createState({ allQuestions, banks, selectedSectionIds }) {
   const state = {
     allQuestions,
+    banks,
+    selectedSectionIds,
     session: [],
     idx: 0,
     answers: {},
@@ -385,7 +443,8 @@ function createState(allQuestions) {
       this._cleanupModal();
       this.pendingSelection = null;
       this.mode = 'intro';
-      renderIntro({ totalQuestions: this.allQuestions.length, onStart: () => this.start() });
+      // main() wires intro rendering with callbacks
+      if (typeof this.showIntro === 'function') this.showIntro();
     },
   };
   return state;
@@ -394,9 +453,52 @@ function createState(allQuestions) {
 (async function main() {
   try {
     renderLoading();
-    const questions = await loadQuestions();
-    const state = createState(questions);
-    renderIntro({ totalQuestions: questions.length, onStart: () => state.start() });
+
+    const banks = await loadBanks();
+    const defaultIds = banks.sections.map(s => s.id);
+    let selectedSectionIds = loadSelectedSections(defaultIds);
+
+    async function loadSelectedQuestions() {
+      const secs = banks.sections.filter(s => selectedSectionIds.includes(s.id));
+      const loaded = await Promise.all(secs.map(s => loadSectionQuestions(s.file)));
+      return loaded.flat();
+    }
+
+    let allQuestions = await loadSelectedQuestions();
+
+    const state = createState({ allQuestions, banks, selectedSectionIds });
+
+    async function toggleSection(id) {
+      const set = new Set(selectedSectionIds);
+      if (set.has(id)) set.delete(id); else set.add(id);
+      selectedSectionIds = Array.from(set);
+      saveSelectedSections(selectedSectionIds);
+
+      state.selectedSectionIds = selectedSectionIds;
+      state.allQuestions = await loadSelectedQuestions();
+      state.showIntro();
+    }
+
+    async function selectAll() {
+      selectedSectionIds = banks.sections.map(s => s.id);
+      saveSelectedSections(selectedSectionIds);
+
+      state.selectedSectionIds = selectedSectionIds;
+      state.allQuestions = await loadSelectedQuestions();
+      state.showIntro();
+    }
+
+    state.showIntro = () => {
+      renderIntro({
+        banks,
+        selectedSectionIds,
+        onToggleSection: toggleSection,
+        onSelectAll: selectAll,
+        onStart: () => state.start(),
+      });
+    };
+
+    state.showIntro();
   } catch (err) {
     renderError(err);
   }
