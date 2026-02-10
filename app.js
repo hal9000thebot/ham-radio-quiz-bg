@@ -94,14 +94,18 @@ function renderQuestion(state) {
       disabled: Boolean(answered),
       onClick: () => {
         if (answered) return;
-        const ok = window.confirm(`Сигурен ли си, че избираш отговор ${letter}?`);
-        if (!ok) return;
-        state.answerCurrent(letter);
+        state.openConfirm(letter);
       }
     }, [
       el('span', { class: 'label', text: `${letter}.` }),
       el('span', { text })
     ]);
+
+    // Visual cue for pending choice
+    if (!answered && state.pendingSelection && state.pendingSelection.letter === letter) {
+      btn.style.borderColor = 'rgba(122,162,255,.65)';
+      btn.style.background = 'rgba(122,162,255,.12)';
+    }
 
     if (answered) {
       if (letter === q.answer) btn.classList.add('good');
@@ -131,6 +135,29 @@ function renderQuestion(state) {
   }
 
   ROOT.appendChild(el('div', { class: 'card' }, cardChildren));
+
+  // In-app confirm modal (works in in-app browsers that block window.confirm)
+  if (state.pendingSelection && state.pendingSelection.qid === q.id && !answered) {
+    const letter = state.pendingSelection.letter;
+    const modal = el('div', { class: 'modal-backdrop' }, [
+      el('div', { class: 'modal' }, [
+        el('h3', { text: 'Потвърди избор' }),
+        el('p', { text: `Сигурен ли си, че избираш отговор ${letter}?` }),
+        el('div', { class: 'actions' }, [
+          el('button', { class: 'secondary', text: 'Отказ', onClick: () => state.closeConfirm() }),
+          el('button', { class: 'primary', text: 'Да, избери', onClick: () => state.confirmSelection() }),
+        ])
+      ])
+    ]);
+    document.body.appendChild(modal);
+
+    // Close if clicking backdrop
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) state.closeConfirm();
+    });
+
+    state._modalEl = modal;
+  }
 }
 
 function renderResults(state) {
@@ -184,7 +211,40 @@ function createState(allQuestions) {
     correctCount: 0,
     mode: 'intro', // intro | quiz | results
 
+    pendingSelection: null,
+    _modalEl: null,
+
+    _cleanupModal() {
+      if (this._modalEl) {
+        try { this._modalEl.remove(); } catch {}
+        this._modalEl = null;
+      }
+    },
+
+    openConfirm(letter) {
+      const q = this.session[this.idx];
+      this._cleanupModal();
+      this.pendingSelection = { qid: q.id, letter };
+      renderQuestion(this);
+    },
+
+    closeConfirm() {
+      this.pendingSelection = null;
+      this._cleanupModal();
+      renderQuestion(this);
+    },
+
+    confirmSelection() {
+      if (!this.pendingSelection) return;
+      const { letter } = this.pendingSelection;
+      this.pendingSelection = null;
+      this._cleanupModal();
+      this.answerCurrent(letter);
+    },
+
     start() {
+      this._cleanupModal();
+      this.pendingSelection = null;
       this.session = sample(this.allQuestions, Math.min(SESSION_SIZE, this.allQuestions.length));
       this.idx = 0;
       this.answers = {};
@@ -201,6 +261,8 @@ function createState(allQuestions) {
     },
 
     next() {
+      this._cleanupModal();
+      this.pendingSelection = null;
       if (this.idx >= this.session.length - 1) {
         this.mode = 'results';
         renderResults(this);
@@ -211,6 +273,8 @@ function createState(allQuestions) {
     },
 
     reset() {
+      this._cleanupModal();
+      this.pendingSelection = null;
       this.mode = 'intro';
       renderIntro({ totalQuestions: this.allQuestions.length, onStart: () => this.start() });
     },
