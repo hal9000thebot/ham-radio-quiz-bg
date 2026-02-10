@@ -2,6 +2,56 @@ const ROOT = document.getElementById('root');
 
 const SESSION_SIZE = 30;
 
+// ---- Progress tracking (localStorage) ----
+const PROGRESS_KEY = 'hamQuizProgressV1';
+
+function loadProgress() {
+  try {
+    const raw = localStorage.getItem(PROGRESS_KEY);
+    if (!raw) return { byQid: {}, byTopic: {}, total: { attempts: 0, correct: 0 }, bestStreak: 0, lastSession: null };
+    const obj = JSON.parse(raw);
+    return obj;
+  } catch {
+    return { byQid: {}, byTopic: {}, total: { attempts: 0, correct: 0 }, bestStreak: 0, lastSession: null };
+  }
+}
+
+function saveProgress(progress) {
+  try {
+    localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress));
+  } catch {
+    // ignore
+  }
+}
+
+function updateProgress(progress, q, isCorrect) {
+  const qid = q.id;
+  const topic = q.topic || 'Общи';
+
+  progress.total = progress.total || { attempts: 0, correct: 0 };
+  progress.total.attempts += 1;
+  if (isCorrect) progress.total.correct += 1;
+
+  progress.byQid = progress.byQid || {};
+  const pq = progress.byQid[qid] || { attempts: 0, correct: 0, lastCorrect: null, lastSeen: null };
+  pq.attempts += 1;
+  if (isCorrect) pq.correct += 1;
+  pq.lastCorrect = isCorrect;
+  pq.lastSeen = Date.now();
+  progress.byQid[qid] = pq;
+
+  progress.byTopic = progress.byTopic || {};
+  const pt = progress.byTopic[topic] || { attempts: 0, correct: 0 };
+  pt.attempts += 1;
+  if (isCorrect) pt.correct += 1;
+  progress.byTopic[topic] = pt;
+}
+
+function pct(correct, attempts) {
+  if (!attempts) return 0;
+  return Math.round((correct / attempts) * 100);
+}
+
 function shuffle(arr) {
   // Fisher–Yates
   const a = [...arr];
@@ -74,6 +124,7 @@ function renderQuestion(state) {
   const header = el('div', { class: 'row' }, [
     el('span', { class: 'pill', text: `Въпрос ${idx + 1} / ${session.length}` }),
     el('span', { class: 'pill', text: `Резултат: ${state.correctCount} ✅ / ${idx} отговорени` }),
+    el('span', { class: 'pill', text: `Серия: ${state.sessionStreak}` }),
     el('span', { class: 'spacer' }),
     el('button', {
       class: 'secondary',
@@ -174,13 +225,40 @@ function renderResults(state) {
     }));
 
   ROOT.innerHTML = '';
+
+  const actionButtons = [
+    el('button', { class: 'primary', text: 'Нова сесия', onClick: () => state.reset() }),
+  ];
+
+  if (wrong.length) {
+    actionButtons.unshift(
+      el('button', { class: 'secondary', text: 'Преговор (само грешните)', onClick: () => state.startReviewWrong() })
+    );
+  }
+
+  const overallAttempts = state.progress?.total?.attempts || 0;
+  const overallCorrect = state.progress?.total?.correct || 0;
+  const overallPct = pct(overallCorrect, overallAttempts);
+
+  // Weak areas (min 5 attempts)
+  const topicEntries = Object.entries(state.progress?.byTopic || {})
+    .map(([topic, v]) => ({ topic, attempts: v.attempts || 0, correct: v.correct || 0, pct: pct(v.correct || 0, v.attempts || 0) }))
+    .filter(x => x.attempts >= 5)
+    .sort((a, b) => a.pct - b.pct)
+    .slice(0, 5);
+
   ROOT.appendChild(
     el('div', { class: 'card results' }, [
       el('h2', { text: `Резултат: ${correct} / ${total} (${pct}%)` }),
       el('p', { class: 'sub', text: `Грешни: ${wrong.length}.` }),
-      el('div', { class: 'actions' }, [
-        el('button', { class: 'primary', text: 'Нова сесия', onClick: () => state.reset() }),
-      ]),
+      el('p', { class: 'sub', text: `Общо (всички сесии): ${overallCorrect}/${overallAttempts} (${overallPct}%)` }),
+      el('div', { class: 'actions' }, actionButtons),
+      topicEntries.length
+        ? el('div', {}, [
+            el('p', { class: 'sub', text: 'Слаби теми (по точност):' }),
+            el('ul', {}, topicEntries.map(t => el('li', { text: `${t.topic}: ${t.correct}/${t.attempts} (${t.pct}%)` })))
+          ])
+        : el('p', { class: 'sub', text: 'Натрупай поне 5 опита по тема, за да видиш “слаби теми”.' }),
       wrong.length
         ? el('div', {}, [
             el('p', { class: 'sub', text: 'Преглед на грешните:' }),
@@ -213,6 +291,10 @@ function createState(allQuestions) {
 
     pendingSelection: null,
     _modalEl: null,
+
+    // Progress tracking
+    progress: loadProgress(),
+    sessionStreak: 0,
 
     _cleanupModal() {
       if (this._modalEl) {
@@ -249,14 +331,41 @@ function createState(allQuestions) {
       this.idx = 0;
       this.answers = {};
       this.correctCount = 0;
+      this.sessionStreak = 0;
+      this.mode = 'quiz';
+      renderQuestion(this);
+    },
+
+    startReviewWrong() {
+      // Build a new session from the wrong answers in the last session
+      const wrongQs = this.session.filter(q => this.answers[q.id]?.selected && this.answers[q.id].selected !== q.answer);
+      this._cleanupModal();
+      this.pendingSelection = null;
+      this.session = shuffle(wrongQs);
+      this.idx = 0;
+      this.answers = {};
+      this.correctCount = 0;
+      this.sessionStreak = 0;
       this.mode = 'quiz';
       renderQuestion(this);
     },
 
     answerCurrent(letter) {
       const q = this.session[this.idx];
+      const isCorrect = letter === q.answer;
+
       this.answers[q.id] = { selected: letter };
-      if (letter === q.answer) this.correctCount += 1;
+      if (isCorrect) {
+        this.correctCount += 1;
+        this.sessionStreak += 1;
+      } else {
+        this.sessionStreak = 0;
+      }
+
+      // Persist progress stats
+      updateProgress(this.progress, q, isCorrect);
+      saveProgress(this.progress);
+
       renderQuestion(this);
     },
 
